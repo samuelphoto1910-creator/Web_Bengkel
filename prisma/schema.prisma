@@ -1,0 +1,297 @@
+// Prisma Schema for Sistem Inventory Bengkel Motor
+// Based on PRD v1.0
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+enum Role {
+  OWNER
+  OPERATOR
+}
+
+enum EntityStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum TransactionStatus {
+  DRAFT
+  POSTED
+  VOIDED
+}
+
+enum StockMovementType {
+  IN_PURCHASE
+  OUT_SALE
+  ADJUSTMENT_IN
+  ADJUSTMENT_OUT
+  OPNAME
+  VOID_PURCHASE
+  VOID_SALE
+}
+
+enum OpnameStatus {
+  DRAFT
+  CONFIRMED
+}
+
+model User {
+  id           String        @id @default(uuid())
+  name         String
+  email        String        @unique
+  passwordHash String
+  role         Role          @default(OPERATOR)
+  status       EntityStatus  @default(ACTIVE)
+  purchases    Purchase[]
+  sales        Sale[]
+  stockMovements StockMovement[]
+  stockOpnames StockOpname[]
+  expenses     Expense[]
+  auditLogs    AuditLog[]
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  @@map("users")
+}
+
+model Category {
+  id          String        @id @default(uuid())
+  name        String        @unique
+  description String?
+  status      EntityStatus  @default(ACTIVE)
+  products    Product[]
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  @@map("categories")
+}
+
+model Supplier {
+  id            String        @id @default(uuid())
+  name          String
+  contactPerson String?
+  phone         String?
+  address       String?
+  notes         String?
+  status        EntityStatus  @default(ACTIVE)
+  purchases     Purchase[]
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  @@map("suppliers")
+}
+
+model Product {
+  id              String            @id @default(uuid())
+  sku             String            @unique
+  name            String
+  categoryId      String
+  category        Category          @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  unit            String            @default("Pcs") // Pcs, Botol, Set, Liter, Box
+  lastBuyPrice    Decimal           @default(0) @db.Decimal(15, 2)
+  averageBuyPrice Decimal           @default(0) @db.Decimal(15, 2) // Moving Weighted Average HPP
+  sellPrice       Decimal           @default(0) @db.Decimal(15, 2)
+  stock           Int               @default(0)
+  minStock        Int               @default(5)
+  status          EntityStatus      @default(ACTIVE)
+  purchaseItems   PurchaseItem[]
+  saleItems       SaleItem[]
+  stockMovements  StockMovement[]
+  opnameItems     StockOpnameItem[]
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  @@index([categoryId])
+  @@index([status])
+  @@map("products")
+}
+
+model Purchase {
+  id            String            @id @default(uuid())
+  invoiceNumber String            @unique
+  supplierId    String
+  supplier      Supplier          @relation(fields: [supplierId], references: [id], onDelete: Restrict)
+  date          DateTime          @default(now())
+  status        TransactionStatus @default(POSTED)
+  subtotal      Decimal           @default(0) @db.Decimal(15, 2)
+  discount      Decimal           @default(0) @db.Decimal(15, 2)
+  additionalFee Decimal           @default(0) @db.Decimal(15, 2)
+  total         Decimal           @default(0) @db.Decimal(15, 2)
+  notes         String?
+  createdById   String
+  user          User              @relation(fields: [createdById], references: [id], onDelete: Restrict)
+  items         PurchaseItem[]
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+
+  @@index([supplierId])
+  @@index([date])
+  @@index([status])
+  @@map("purchases")
+}
+
+model PurchaseItem {
+  id         String   @id @default(uuid())
+  purchaseId String
+  purchase   Purchase @relation(fields: [purchaseId], references: [id], onDelete: Cascade)
+  productId  String
+  product    Product  @relation(fields: [productId], references: [id], onDelete: Restrict)
+  quantity   Int
+  buyPrice   Decimal  @db.Decimal(15, 2)
+  subtotal   Decimal  @db.Decimal(15, 2)
+
+  @@index([purchaseId])
+  @@index([productId])
+  @@map("purchase_items")
+}
+
+model Sale {
+  id            String            @id @default(uuid())
+  invoiceNumber String            @unique
+  customerName  String?           @default("Umum")
+  date          DateTime          @default(now())
+  status        TransactionStatus @default(POSTED)
+  subtotal      Decimal           @default(0) @db.Decimal(15, 2)
+  discount      Decimal           @default(0) @db.Decimal(15, 2)
+  total         Decimal           @default(0) @db.Decimal(15, 2)
+  notes         String?
+  createdById   String
+  user          User              @relation(fields: [createdById], references: [id], onDelete: Restrict)
+  items         SaleItem[]
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+
+  @@index([date])
+  @@index([status])
+  @@map("sales")
+}
+
+model SaleItem {
+  id          String   @id @default(uuid())
+  saleId      String
+  sale        Sale     @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  productId   String
+  product     Product  @relation(fields: [productId], references: [id], onDelete: Restrict)
+  quantity    Int
+  sellPrice   Decimal  @db.Decimal(15, 2)
+  hppSnapshot Decimal  @db.Decimal(15, 2) // Snapshot HPP at sale moment
+  discount    Decimal  @default(0) @db.Decimal(15, 2)
+  subtotal    Decimal  @db.Decimal(15, 2)
+
+  @@index([saleId])
+  @@index([productId])
+  @@map("sale_items")
+}
+
+model StockMovement {
+  id            String            @id @default(uuid())
+  productId     String
+  product       Product           @relation(fields: [productId], references: [id], onDelete: Restrict)
+  type          StockMovementType
+  refNumber     String?
+  quantity      Int               // Positive for addition, negative for reduction
+  previousStock Int
+  currentStock  Int
+  reason        String?
+  createdById   String?
+  user          User?             @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt     DateTime          @default(now())
+
+  @@index([productId])
+  @@index([createdAt])
+  @@index([type])
+  @@map("stock_movements")
+}
+
+model StockOpname {
+  id           String            @id @default(uuid())
+  opnameNumber String            @unique
+  date         DateTime          @default(now())
+  status       OpnameStatus      @default(DRAFT)
+  notes        String?
+  createdById  String
+  user         User              @relation(fields: [createdById], references: [id], onDelete: Restrict)
+  items        StockOpnameItem[]
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+
+  @@index([date])
+  @@map("stock_opnames")
+}
+
+model StockOpnameItem {
+  id            String      @id @default(uuid())
+  stockOpnameId String
+  stockOpname   StockOpname @relation(fields: [stockOpnameId], references: [id], onDelete: Cascade)
+  productId     String
+  product       Product     @relation(fields: [productId], references: [id], onDelete: Restrict)
+  systemStock   Int
+  physicalStock Int
+  difference    Int
+  reason        String?
+
+  @@index([stockOpnameId])
+  @@index([productId])
+  @@map("stock_opname_items")
+}
+
+model ExpenseCategory {
+  id        String       @id @default(uuid())
+  name      String       @unique
+  status    EntityStatus @default(ACTIVE)
+  expenses  Expense[]
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  @@map("expense_categories")
+}
+
+model Expense {
+  id          String          @id @default(uuid())
+  categoryId  String
+  category    ExpenseCategory @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  date        DateTime        @default(now())
+  amount      Decimal         @db.Decimal(15, 2)
+  description String
+  createdById String
+  user        User            @relation(fields: [createdById], references: [id], onDelete: Restrict)
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+
+  @@index([categoryId])
+  @@index([date])
+  @@map("expenses")
+}
+
+model AuditLog {
+  id          String   @id @default(uuid())
+  action      String   // CREATE, UPDATE, DELETE, POST, VOID
+  entity      String   // Product, Purchase, Sale, Expense, User, etc.
+  recordId    String
+  metadata    String?  @db.Text // JSON string of changes
+  createdById String?
+  user        User?    @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt   DateTime @default(now())
+
+  @@index([entity, recordId])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+model Setting {
+  id            String   @id @default("default")
+  storeName     String   @default("Bengkel Motor Sahabat")
+  phone         String   @default("0812-3456-7890")
+  address       String   @default("Jl. Raya Otomotif No. 123, Jakarta")
+  receiptFooter String   @default("Terima kasih atas kunjungan Anda. Garansi servis 7 hari.")
+  updatedAt     DateTime @updatedAt
+
+  @@map("settings")
+}
