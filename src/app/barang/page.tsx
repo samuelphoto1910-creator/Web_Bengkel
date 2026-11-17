@@ -37,6 +37,7 @@ interface Product {
   minStock: number;
   assetValue: number;
   isLowStock: boolean;
+  isService?: boolean;
   status: "ACTIVE" | "INACTIVE";
 }
 
@@ -45,6 +46,7 @@ export default function BarangPage() {
   const [categories, setCategories] = useState<Category[]>([]);
   const [search, setSearch] = useState("");
   const [selectedCategory, setSelectedCategory] = useState("");
+  const [typeFilter, setTypeFilter] = useState<"ALL" | "GOODS" | "SERVICE">("ALL");
   const [lowStockFilter, setLowStockFilter] = useState(false);
   const [statusFilter, setStatusFilter] = useState("ACTIVE");
   const [loading, setLoading] = useState(true);
@@ -57,6 +59,7 @@ export default function BarangPage() {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   // Form State
+  const [formIsService, setFormIsService] = useState(false);
   const [formSku, setFormSku] = useState("");
   const [formName, setFormName] = useState("");
   const [formCategoryId, setFormCategoryId] = useState("");
@@ -98,6 +101,7 @@ export default function BarangPage() {
   }, [search, selectedCategory, lowStockFilter, statusFilter]);
 
   const resetForm = () => {
+    setFormIsService(false);
     setFormSku("");
     setFormName("");
     setFormCategoryId(categories[0]?.id || "");
@@ -119,6 +123,7 @@ export default function BarangPage() {
 
   const handleOpenEdit = (prod: Product) => {
     setEditingProduct(prod);
+    setFormIsService(Boolean(prod.isService));
     setFormSku(prod.sku);
     setFormName(prod.name);
     setFormCategoryId(prod.categoryId);
@@ -142,11 +147,12 @@ export default function BarangPage() {
           sku: formSku,
           name: formName,
           categoryId: formCategoryId,
-          unit: formUnit,
-          buyPrice: Number(formBuyPrice) || 0,
+          unit: formIsService ? "Jasa" : formUnit,
+          isService: formIsService,
+          buyPrice: formIsService ? 0 : Number(formBuyPrice) || 0,
           sellPrice: Number(formSellPrice) || 0,
-          initialStock: Number(formInitialStock) || 0,
-          minStock: Number(formMinStock) || 5,
+          initialStock: formIsService ? 0 : Number(formInitialStock) || 0,
+          minStock: formIsService ? 0 : Number(formMinStock) || 5,
         }),
       });
 
@@ -181,6 +187,7 @@ export default function BarangPage() {
           name: formName,
           categoryId: formCategoryId,
           unit: formUnit,
+          isService: editingProduct.isService,
           sellPrice: Number(formSellPrice) || 0,
           minStock: Number(formMinStock) || 5,
           status: editStatus,
@@ -217,6 +224,12 @@ export default function BarangPage() {
       alert(err instanceof Error ? err.message : "Terjadi kesalahan saat menghapus barang");
     }
   };
+
+  const filteredProducts = products.filter((p) => {
+    if (typeFilter === "GOODS") return !p.isService;
+    if (typeFilter === "SERVICE") return Boolean(p.isService);
+    return true;
+  });
 
   const totalAssetValue = products.reduce((sum, p) => sum + p.assetValue, 0);
 
@@ -264,6 +277,17 @@ export default function BarangPage() {
               <option value="ACTIVE">Status: Aktif</option>
               <option value="ALL">Status: Semua</option>
               <option value="INACTIVE">Status: Nonaktif (Arsip)</option>
+            </select>
+
+            {/* Type Filter */}
+            <select
+              value={typeFilter}
+              onChange={(e) => setTypeFilter(e.target.value as "ALL" | "GOODS" | "SERVICE")}
+              className="flex-1 sm:flex-initial px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs text-slate-700 font-medium shadow-xs focus:outline-hidden focus:ring-2 focus:ring-blue-500"
+            >
+              <option value="ALL">Semua Tipe</option>
+              <option value="GOODS">📦 Sparepart (Fisik)</option>
+              <option value="SERVICE">🔧 Jasa Servis</option>
             </select>
 
             {/* Low Stock Filter */}
@@ -342,21 +366,26 @@ export default function BarangPage() {
                     Memuat data barang...
                   </td>
                 </tr>
-              ) : products.length === 0 ? (
+              ) : filteredProducts.length === 0 ? (
                 <tr>
                   <td colSpan={8} className="py-12 text-center text-slate-400">
                     Tidak ada barang ditemukan. Klik &quot;Tambah Barang&quot; untuk memasukkan barang baru.
                   </td>
                 </tr>
               ) : (
-                products.map((p) => (
+                filteredProducts.map((p) => (
                   <tr key={p.id} className="hover:bg-slate-50/70 transition-colors">
                     <td className="py-3.5 px-4 font-mono font-semibold text-slate-900">
                       {p.sku}
                     </td>
                     <td className="py-3.5 px-4 font-medium text-slate-900">
-                      <div className="flex items-center space-x-2">
+                      <div className="flex items-center space-x-2 flex-wrap gap-1">
                         <span>{p.name}</span>
+                        {p.isService && (
+                          <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-purple-100 text-purple-700">
+                            Jasa
+                          </span>
+                        )}
                         {p.status === "INACTIVE" && (
                           <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-200 text-slate-600">
                             Nonaktif (Arsip)
@@ -370,24 +399,30 @@ export default function BarangPage() {
                       </span>
                     </td>
                     <td className="py-3.5 px-4 text-center">
-                      <span
-                        className={`inline-flex items-center px-2 py-0.5 rounded-full font-bold text-xs ${
-                          p.stock <= p.minStock
-                            ? "bg-rose-100 text-rose-700 border border-rose-200"
-                            : "bg-emerald-100 text-emerald-800"
-                        }`}
-                      >
-                        {p.stock} {p.unit}
-                      </span>
+                      {p.isService ? (
+                        <span className="inline-flex items-center px-2 py-0.5 rounded-full font-bold text-xs bg-purple-50 text-purple-700 border border-purple-200">
+                          Tanpa Stok (Jasa)
+                        </span>
+                      ) : (
+                        <span
+                          className={`inline-flex items-center px-2 py-0.5 rounded-full font-bold text-xs ${
+                            p.stock <= p.minStock
+                              ? "bg-rose-100 text-rose-700 border border-rose-200"
+                              : "bg-emerald-100 text-emerald-800"
+                          }`}
+                        >
+                          {p.stock} {p.unit}
+                        </span>
+                      )}
                     </td>
                     <td className="py-3.5 px-4 text-right font-medium text-slate-600">
-                      {formatRupiah(p.averageBuyPrice)}
+                      {p.isService ? <span className="text-slate-400">Rp 0 (Jasa)</span> : formatRupiah(p.averageBuyPrice)}
                     </td>
                     <td className="py-3.5 px-4 text-right font-bold text-slate-900">
                       {formatRupiah(p.sellPrice)}
                     </td>
                     <td className="py-3.5 px-4 text-right font-semibold text-emerald-700">
-                      {formatRupiah(p.assetValue)}
+                      {p.isService ? "-" : formatRupiah(p.assetValue)}
                     </td>
                     <td className="py-3.5 px-4 text-center">
                       <div className="flex items-center justify-center space-x-1.5">
@@ -443,17 +478,52 @@ export default function BarangPage() {
             )}
 
             <form onSubmit={handleSubmitAdd} className="mt-4 space-y-4 text-xs">
+              {/* Type Switcher: Fisik vs Jasa */}
+              <div className="flex items-center space-x-2 bg-slate-100 p-1 rounded-xl mb-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setFormIsService(false);
+                    if (formUnit === "Jasa") setFormUnit("Pcs");
+                  }}
+                  className={`flex-1 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                    !formIsService
+                      ? "bg-white text-slate-900 shadow-xs"
+                      : "text-slate-500 hover:text-slate-900"
+                  }`}
+                >
+                  📦 Barang Fisik (Ada Stok)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setFormIsService(true);
+                    setFormUnit("Jasa");
+                    setFormInitialStock("0");
+                    setFormMinStock("0");
+                    setFormBuyPrice("0");
+                  }}
+                  className={`flex-1 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                    formIsService
+                      ? "bg-purple-600 text-white shadow-xs"
+                      : "text-slate-500 hover:text-slate-900"
+                  }`}
+                >
+                  🔧 Jasa Servis (Tanpa Stok)
+                </button>
+              </div>
+
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block font-semibold text-slate-700 mb-1">
-                    Kode SKU <span className="text-rose-500">*</span>
+                    Kode SKU / Jasa <span className="text-rose-500">*</span>
                   </label>
                   <input
                     type="text"
                     required
                     value={formSku}
                     onChange={(e) => setFormSku(e.target.value.toUpperCase())}
-                    placeholder="Contoh: OLI-MPX2-08"
+                    placeholder={formIsService ? "Contoh: JS-GANTI-OLI" : "Contoh: OLI-MPX2-08"}
                     className="w-full px-3 py-2 border border-slate-300 rounded-lg uppercase font-mono focus:ring-2 focus:ring-blue-500 focus:outline-hidden"
                   />
                 </div>
@@ -478,80 +548,86 @@ export default function BarangPage() {
 
               <div>
                 <label className="block font-semibold text-slate-700 mb-1">
-                  Nama Barang <span className="text-rose-500">*</span>
+                  {formIsService ? "Nama Jasa Servis" : "Nama Barang"} <span className="text-rose-500">*</span>
                 </label>
                 <input
                   type="text"
                   required
                   value={formName}
                   onChange={(e) => setFormName(e.target.value)}
-                  placeholder="Contoh: Oli Mesin MPX 2 Matic 0.8L"
+                  placeholder={formIsService ? "Contoh: Jasa Ganti Oli Mesin / Pasang Ban" : "Contoh: Oli Mesin MPX 2 Matic 0.8L"}
                   className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-hidden"
                 />
               </div>
 
-              <div className="grid grid-cols-3 gap-3">
-                <div>
-                  <label className="block font-semibold text-slate-700 mb-1">Satuan</label>
-                  <select
-                    value={formUnit}
-                    onChange={(e) => setFormUnit(e.target.value)}
-                    className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-hidden"
-                  >
-                    <option value="Pcs">Pcs</option>
-                    <option value="Botol">Botol</option>
-                    <option value="Set">Set</option>
-                    <option value="Liter">Liter</option>
-                    <option value="Box">Box</option>
-                    <option value="Dus">Dus</option>
-                  </select>
+              {!formIsService && (
+                <div className="grid grid-cols-3 gap-3">
+                  <div>
+                    <label className="block font-semibold text-slate-700 mb-1">Satuan</label>
+                    <select
+                      value={formUnit}
+                      onChange={(e) => setFormUnit(e.target.value)}
+                      className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-hidden"
+                    >
+                      <option value="Pcs">Pcs</option>
+                      <option value="Botol">Botol</option>
+                      <option value="Set">Set</option>
+                      <option value="Liter">Liter</option>
+                      <option value="Box">Box</option>
+                      <option value="Dus">Dus</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block font-semibold text-slate-700 mb-1">Stok Awal</label>
+                    <input
+                      type="number"
+                      min="0"
+                      value={formInitialStock}
+                      onChange={(e) => setFormInitialStock(e.target.value)}
+                      placeholder="0"
+                      className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-hidden"
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-semibold text-slate-700 mb-1">Min. Stok Alert</label>
+                    <input
+                      type="number"
+                      min="1"
+                      value={formMinStock}
+                      onChange={(e) => setFormMinStock(e.target.value)}
+                      placeholder="5"
+                      className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-hidden"
+                    />
+                  </div>
                 </div>
-                <div>
-                  <label className="block font-semibold text-slate-700 mb-1">Stok Awal</label>
-                  <input
-                    type="number"
-                    min="0"
-                    value={formInitialStock}
-                    onChange={(e) => setFormInitialStock(e.target.value)}
-                    placeholder="0"
-                    className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-hidden"
-                  />
-                </div>
-                <div>
-                  <label className="block font-semibold text-slate-700 mb-1">Min. Stok Alert</label>
-                  <input
-                    type="number"
-                    min="1"
-                    value={formMinStock}
-                    onChange={(e) => setFormMinStock(e.target.value)}
-                    placeholder="5"
-                    className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-hidden"
-                  />
-                </div>
-              </div>
+              )}
 
-              <div className="grid grid-cols-2 gap-3">
+              <div className={`grid ${formIsService ? "grid-cols-1" : "grid-cols-2"} gap-3`}>
+                {!formIsService && (
+                  <div>
+                    <label className="block font-semibold text-slate-700 mb-1">Harga Beli Awal (Rp)</label>
+                    <input
+                      type="number"
+                      min="0"
+                      value={formBuyPrice}
+                      onChange={(e) => setFormBuyPrice(e.target.value)}
+                      placeholder="45000"
+                      className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-hidden"
+                    />
+                  </div>
+                )}
                 <div>
-                  <label className="block font-semibold text-slate-700 mb-1">Harga Beli Awal (Rp)</label>
-                  <input
-                    type="number"
-                    min="0"
-                    value={formBuyPrice}
-                    onChange={(e) => setFormBuyPrice(e.target.value)}
-                    placeholder="45000"
-                    className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-hidden"
-                  />
-                </div>
-                <div>
-                  <label className="block font-semibold text-slate-700 mb-1">Harga Jual (Rp) *</label>
+                  <label className="block font-semibold text-slate-700 mb-1">
+                    {formIsService ? "Tarif / Biaya Jasa (Rp)" : "Harga Jual (Rp)"} <span className="text-rose-500">*</span>
+                  </label>
                   <input
                     type="number"
                     required
                     min="0"
                     value={formSellPrice}
                     onChange={(e) => setFormSellPrice(e.target.value)}
-                    placeholder="55000"
-                    className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-hidden"
+                    placeholder={formIsService ? "15000" : "55000"}
+                    className="w-full px-3 py-2 border border-slate-300 rounded-lg font-bold text-slate-900 focus:ring-2 focus:ring-blue-500 focus:outline-hidden"
                   />
                 </div>
               </div>

@@ -42,6 +42,18 @@ enum OpnameStatus {
   CONFIRMED
 }
 
+enum PaymentMethod {
+  CASH
+  DEBIT
+  CREDIT
+  TRANSFER
+}
+
+enum CashMutationType {
+  TOP_UP
+  WITHDRAW
+}
+
 model User {
   id           String        @id @default(uuid())
   name         String
@@ -54,6 +66,7 @@ model User {
   stockMovements StockMovement[]
   stockOpnames StockOpname[]
   expenses     Expense[]
+  cashMutations CashMutation[]
   auditLogs    AuditLog[]
   createdAt    DateTime      @default(now())
   updatedAt    DateTime      @updatedAt
@@ -100,6 +113,7 @@ model Product {
   sellPrice       Decimal           @default(0) @db.Decimal(15, 2)
   stock           Int               @default(0)
   minStock        Int               @default(5)
+  isService       Boolean           @default(false) // True for jasa/ongkos servis (no physical stock)
   status          EntityStatus      @default(ACTIVE)
   purchaseItems   PurchaseItem[]
   saleItems       SaleItem[]
@@ -161,6 +175,10 @@ model Sale {
   subtotal      Decimal           @default(0) @db.Decimal(15, 2)
   discount      Decimal           @default(0) @db.Decimal(15, 2)
   total         Decimal           @default(0) @db.Decimal(15, 2)
+  paymentMethod PaymentMethod     @default(CASH)
+  cardReference String?           // EDC authorization / reference / bank note
+  cashGiven     Decimal           @default(0) @db.Decimal(15, 2)
+  change        Decimal           @default(0) @db.Decimal(15, 2)
   notes         String?
   createdById   String
   user          User              @relation(fields: [createdById], references: [id], onDelete: Restrict)
@@ -294,4 +312,20 @@ model Setting {
   updatedAt     DateTime @updatedAt
 
   @@map("settings")
+}
+
+model CashMutation {
+  id          String           @id @default(uuid())
+  date        DateTime         @default(now())
+  type        CashMutationType @default(TOP_UP)
+  amount      Decimal          @db.Decimal(15, 2)
+  notes       String?
+  createdById String
+  user        User             @relation(fields: [createdById], references: [id], onDelete: Restrict)
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+
+  @@index([date])
+  @@index([type])
+  @@map("cash_mutations")
 }

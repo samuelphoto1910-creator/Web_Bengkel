@@ -43,7 +43,7 @@ export async function GET(req: NextRequest) {
     const result = products
       .filter((p) => {
         if (lowStockOnly) {
-          return p.stock <= p.minStock;
+          return !p.isService && p.stock <= p.minStock;
         }
         return true;
       })
@@ -58,13 +58,14 @@ export async function GET(req: NextRequest) {
           categoryId: p.categoryId,
           categoryName: p.category.name,
           unit: p.unit,
+          isService: p.isService,
           lastBuyPrice: Number(p.lastBuyPrice),
           averageBuyPrice: avgBuy,
           sellPrice: sell,
           stock: p.stock,
           minStock: p.minStock,
-          assetValue: stock * avgBuy,
-          isLowStock: p.stock <= p.minStock,
+          assetValue: p.isService ? 0 : stock * avgBuy,
+          isLowStock: !p.isService && p.stock <= p.minStock,
           status: p.status,
           createdAt: p.createdAt,
         };
@@ -94,6 +95,7 @@ export async function POST(req: NextRequest) {
       sellPrice = 0,
       initialStock = 0,
       minStock = 5,
+      isService = false,
     } = body;
 
     if (!sku || !name || !categoryId) {
@@ -115,6 +117,8 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    const isServ = Boolean(isService);
+
     // Create product in transaction
     const created = await prisma.$transaction(async (tx) => {
       const product = await tx.product.create({
@@ -122,19 +126,20 @@ export async function POST(req: NextRequest) {
           sku: sku.trim().toUpperCase(),
           name: name.trim(),
           categoryId,
-          unit: unit.trim(),
-          lastBuyPrice: Number(buyPrice),
-          averageBuyPrice: Number(buyPrice),
+          unit: isServ ? "Jasa" : unit.trim(),
+          isService: isServ,
+          lastBuyPrice: isServ ? 0 : Number(buyPrice),
+          averageBuyPrice: isServ ? 0 : Number(buyPrice),
           sellPrice: Number(sellPrice),
-          stock: Number(initialStock),
-          minStock: Number(minStock),
+          stock: isServ ? 0 : Number(initialStock),
+          minStock: isServ ? 0 : Number(minStock),
           status: "ACTIVE",
         },
         include: { category: true },
       });
 
-      // Record initial stock movement if initialStock > 0
-      if (Number(initialStock) > 0) {
+      // Record initial stock movement if initialStock > 0 and not service
+      if (!isServ && Number(initialStock) > 0) {
         await tx.stockMovement.create({
           data: {
             productId: product.id,
@@ -178,7 +183,7 @@ export async function PUT(req: NextRequest) {
     }
 
     const body = await req.json();
-    const { id, sku, name, categoryId, unit, sellPrice, minStock, status } = body;
+    const { id, sku, name, categoryId, unit, sellPrice, minStock, status, isService } = body;
 
     if (!id || !sku || !name || !categoryId) {
       return NextResponse.json({ error: "Data wajib diisi" }, { status: 400 });
@@ -194,6 +199,7 @@ export async function PUT(req: NextRequest) {
         sellPrice: Number(sellPrice),
         minStock: Number(minStock),
         status,
+        ...(isService !== undefined ? { isService: Boolean(isService) } : {}),
       },
       include: { category: true },
     });

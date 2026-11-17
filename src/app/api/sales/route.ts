@@ -34,7 +34,7 @@ export async function GET(req: NextRequest) {
         user: { select: { id: true, name: true } },
         items: {
           include: {
-            product: { select: { id: true, sku: true, name: true, unit: true } },
+            product: { select: { id: true, sku: true, name: true, unit: true, isService: true } },
           },
         },
       },
@@ -47,6 +47,10 @@ export async function GET(req: NextRequest) {
       customerName: s.customerName || "Umum",
       date: s.date,
       status: s.status,
+      paymentMethod: s.paymentMethod,
+      cardReference: s.cardReference,
+      cashGiven: Number(s.cashGiven),
+      change: Number(s.change),
       subtotal: Number(s.subtotal),
       discount: Number(s.discount),
       total: Number(s.total),
@@ -59,6 +63,7 @@ export async function GET(req: NextRequest) {
         sku: item.product.sku,
         productName: item.product.name,
         unit: item.product.unit,
+        isService: item.product.isService,
         quantity: item.quantity,
         sellPrice: Number(item.sellPrice),
         hppSnapshot: Number(item.hppSnapshot),
@@ -88,6 +93,10 @@ export async function POST(req: NextRequest) {
       customerName = "Pelanggan Umum",
       date = new Date(),
       discount = 0,
+      paymentMethod = "CASH",
+      cardReference = null,
+      cashGiven = 0,
+      change = 0,
       notes,
       items = [],
     } = body;
@@ -133,8 +142,8 @@ export async function POST(req: NextRequest) {
           throw new Error(`Barang dengan ID ${item.productId} tidak ditemukan`);
         }
 
-        // Check if sufficient stock (AC-04: Ditolak jika stok tidak mencukupi)
-        if (product.stock < qty) {
+        // Check if sufficient stock (AC-04: Ditolak jika stok tidak mencukupi, kecuali jasa)
+        if (!product.isService && product.stock < qty) {
           throw new Error(
             `Stok tidak mencukupi untuk "${product.name}". Stok tersedia: ${product.stock} ${product.unit}, diminta: ${qty}`
           );
@@ -145,10 +154,11 @@ export async function POST(req: NextRequest) {
           productId: product.id,
           productName: product.name,
           unit: product.unit,
+          isService: product.isService,
           currentStock: product.stock,
           quantity: qty,
           sellPrice,
-          hppSnapshot: Number(product.averageBuyPrice), // Snapshot HPP at current average
+          hppSnapshot: product.isService ? 0 : Number(product.averageBuyPrice), // HPP Jasa = 0
           discount: itemDisc,
           subtotal: sub,
         });
@@ -157,6 +167,12 @@ export async function POST(req: NextRequest) {
       const discTotal = Number(discount) || 0;
       const grandTotal = Math.max(0, subtotalCalc - discTotal);
 
+      // Validasi payment method
+      const validPaymentMethods = ["CASH", "DEBIT", "CREDIT", "TRANSFER"] as const;
+      const finalPaymentMethod = validPaymentMethods.includes(paymentMethod as typeof validPaymentMethods[number])
+        ? (paymentMethod as typeof validPaymentMethods[number])
+        : "CASH";
+
       // 1. Create Sale Header & Details
       const sale = await tx.sale.create({
         data: {
@@ -164,6 +180,10 @@ export async function POST(req: NextRequest) {
           customerName: customerName?.trim() || "Pelanggan Umum",
           date: new Date(date),
           status: "POSTED",
+          paymentMethod: finalPaymentMethod,
+          cardReference: cardReference ? String(cardReference).trim() : null,
+          cashGiven: Number(cashGiven) || 0,
+          change: Number(change) || 0,
           subtotal: subtotalCalc,
           discount: discTotal,
           total: grandTotal,
@@ -183,8 +203,10 @@ export async function POST(req: NextRequest) {
         include: { items: true },
       });
 
-      // 2. Reduce stock and record stock movements
+      // 2. Reduce stock and record stock movements (hanya untuk barang fisik, jasa tidak potong stok)
       for (const item of preparedItems) {
+        if (item.isService) continue;
+
         const prevStock = item.currentStock;
         const newStock = prevStock - item.quantity;
 

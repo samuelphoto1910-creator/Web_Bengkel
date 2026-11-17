@@ -34,6 +34,10 @@ interface Sale {
   customerName: string;
   date: string;
   status: "POSTED" | "VOIDED";
+  paymentMethod?: string;
+  cardReference?: string;
+  cashGiven?: number;
+  change?: number;
   subtotal: number;
   discount: number;
   total: number;
@@ -245,6 +249,7 @@ export default function PenjualanPage() {
                 <th className="py-3.5 px-4">No. Invoice</th>
                 <th className="py-3.5 px-4">Tanggal</th>
                 <th className="py-3.5 px-4">Pelanggan</th>
+                <th className="py-3.5 px-4">Metode Bayar</th>
                 <th className="py-3.5 px-4 text-center">Jml Item</th>
                 <th className="py-3.5 px-4 text-right">Total Transaksi</th>
                 <th className="py-3.5 px-4 text-center">Status</th>
@@ -255,13 +260,13 @@ export default function PenjualanPage() {
             <tbody className="divide-y divide-slate-100 text-slate-700">
               {loading ? (
                 <tr>
-                  <td colSpan={8} className="py-12 text-center text-slate-400">
+                  <td colSpan={9} className="py-12 text-center text-slate-400">
                     Memuat data penjualan...
                   </td>
                 </tr>
               ) : filteredSales.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="py-12 text-center text-slate-400">
+                  <td colSpan={9} className="py-12 text-center text-slate-400">
                     Tidak ada data penjualan.
                   </td>
                 </tr>
@@ -273,8 +278,13 @@ export default function PenjualanPage() {
                     </td>
                     <td className="py-3.5 px-4 text-slate-600">{formatDate(s.date)}</td>
                     <td className="py-3.5 px-4 font-medium text-slate-900">{s.customerName}</td>
+                    <td className="py-3.5 px-4">
+                      <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-bold bg-blue-50 text-blue-700">
+                        {s.paymentMethod === "CASH" ? "💵 Tunai" : s.paymentMethod === "DEBIT" ? "💳 Debit" : s.paymentMethod === "CREDIT" ? "💳 Kredit" : "📱 Transfer"}
+                      </span>
+                    </td>
                     <td className="py-3.5 px-4 text-center font-semibold text-emerald-700">
-                      {s.itemCount} barang
+                      {s.itemCount} item
                     </td>
                     <td className="py-3.5 px-4 text-right font-bold text-slate-900">
                       {formatRupiah(s.total)}
@@ -381,6 +391,18 @@ export default function PenjualanPage() {
 
               <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 text-xs space-y-1.5 max-w-xs ml-auto">
                 <div className="flex justify-between text-slate-600">
+                  <span>Metode Bayar:</span>
+                  <span className="font-bold text-blue-700">
+                    {viewingSale.paymentMethod === "CASH" ? "💵 Tunai (Cash)" : viewingSale.paymentMethod === "DEBIT" ? "💳 Kartu Debit" : viewingSale.paymentMethod === "CREDIT" ? "💳 Kartu Kredit" : "📱 Transfer / QRIS"}
+                  </span>
+                </div>
+                {viewingSale.cardReference && (
+                  <div className="flex justify-between text-slate-600">
+                    <span>Ref/Approval:</span>
+                    <span className="font-mono text-slate-700">{viewingSale.cardReference}</span>
+                  </div>
+                )}
+                <div className="flex justify-between text-slate-600 pt-1 border-t border-slate-200">
                   <span>Subtotal:</span>
                   <span>{formatRupiah(viewingSale.subtotal)}</span>
                 </div>
