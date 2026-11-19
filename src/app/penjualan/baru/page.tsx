@@ -58,6 +58,7 @@ export default function KasirPenjualanBaruPage() {
   // Cart & Transaction
   const [cart, setCart] = useState<CartItem[]>([]);
   const [customerName, setCustomerName] = useState("Pelanggan Umum");
+  const [transactionDate, setTransactionDate] = useState("");
   const [notes, setNotes] = useState("");
   const [transDiscount, setTransDiscount] = useState("0");
   const [paymentMethod, setPaymentMethod] = useState<"CASH" | "DEBIT" | "CREDIT" | "TRANSFER">("CASH");
@@ -85,6 +86,7 @@ export default function KasirPenjualanBaruPage() {
   } | null>(null);
 
   useEffect(() => {
+    setTransactionDate(new Date().toISOString().split("T")[0]);
     async function loadData() {
       try {
         const res = await fetch("/api/products");
@@ -261,11 +263,19 @@ export default function KasirPenjualanBaruPage() {
         });
       }
 
+      let finalDate = new Date();
+      if (transactionDate) {
+        const [y, m, d] = transactionDate.split("-").map(Number);
+        const now = new Date();
+        finalDate = new Date(y, m - 1, d, now.getHours(), now.getMinutes(), now.getSeconds());
+      }
+
       const res = await fetch("/api/sales", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           customerName: customerName.trim() || "Pelanggan Umum",
+          date: finalDate.toISOString(),
           discount: discountTotal,
           paymentMethod,
           cardReference: cardReference.trim() || null,
@@ -290,7 +300,7 @@ export default function KasirPenjualanBaruPage() {
         cardReference: cardReference.trim() || undefined,
         cashGiven: paymentMethod === "CASH" ? (cashNum > 0 ? cashNum : grandTotal) : grandTotal,
         change: paymentMethod === "CASH" ? change : 0,
-        date: formatDateTime(new Date()),
+        date: formatDateTime(finalDate),
         items: cart.map((c) => ({
           name: c.product.name,
           qty: c.quantity,
@@ -615,18 +625,43 @@ export default function KasirPenjualanBaruPage() {
               </span>
             </div>
 
-            {/* Customer Name */}
-            <div className="mb-3">
-              <label className="block text-[11px] font-semibold text-slate-600 mb-1">
-                Nama Pelanggan / No. Polisi
-              </label>
-              <input
-                type="text"
-                value={customerName}
-                onChange={(e) => setCustomerName(e.target.value)}
-                placeholder="Contoh: Budi (B 1234 XYZ)"
-                className="w-full px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-medium focus:ring-2 focus:ring-emerald-500 focus:outline-hidden"
-              />
+            {/* Customer Name & Transaction Date */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 mb-3">
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-600 mb-1">
+                  Nama Pelanggan / No. Polisi
+                </label>
+                <input
+                  type="text"
+                  value={customerName}
+                  onChange={(e) => setCustomerName(e.target.value)}
+                  placeholder="Contoh: Budi (B 1234 XYZ)"
+                  className="w-full px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-medium focus:ring-2 focus:ring-emerald-500 focus:outline-hidden"
+                />
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block text-[11px] font-semibold text-slate-600">
+                    Tanggal Transaksi
+                  </label>
+                  {transactionDate && transactionDate !== new Date().toISOString().split("T")[0] && (
+                    <button
+                      type="button"
+                      onClick={() => setTransactionDate(new Date().toISOString().split("T")[0])}
+                      className="text-[10px] text-emerald-600 hover:text-emerald-700 font-semibold cursor-pointer"
+                    >
+                      Reset Hari Ini
+                    </button>
+                  )}
+                </div>
+                <input
+                  type="date"
+                  value={transactionDate}
+                  onChange={(e) => setTransactionDate(e.target.value)}
+                  className="w-full px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-medium text-slate-800 focus:ring-2 focus:ring-emerald-500 focus:outline-hidden"
+                />
+              </div>
             </div>
 
             {/* Cart Items List */}

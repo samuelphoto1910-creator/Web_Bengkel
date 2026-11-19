@@ -301,3 +301,59 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: msg }, { status: 500 });
   }
 }
+
+export async function PATCH(req: NextRequest) {
+  try {
+    const session = await authenticateUser(req);
+    if (!session) {
+      return NextResponse.json({ error: "Sesi tidak valid" }, { status: 401 });
+    }
+
+    const body = await req.json();
+    const { id, date, customerName, notes } = body;
+
+    if (!id) {
+      return NextResponse.json({ error: "ID transaksi penjualan wajib diisi" }, { status: 400 });
+    }
+
+    const sale = await prisma.sale.findUnique({ where: { id } });
+    if (!sale) {
+      return NextResponse.json({ error: "Transaksi penjualan tidak ditemukan" }, { status: 404 });
+    }
+
+    const updateData: Record<string, unknown> = {};
+    if (date) {
+      updateData.date = new Date(date);
+    }
+    if (customerName !== undefined) {
+      updateData.customerName = customerName?.trim() || "Pelanggan Umum";
+    }
+    if (notes !== undefined) {
+      updateData.notes = notes?.trim() || null;
+    }
+
+    const updated = await prisma.sale.update({
+      where: { id },
+      data: updateData,
+    });
+
+    // Record Audit Log
+    await prisma.auditLog.create({
+      data: {
+        action: "UPDATE",
+        entity: "Sale",
+        recordId: id,
+        metadata: JSON.stringify({
+          updatedFields: Object.keys(updateData),
+          invoiceNumber: sale.invoiceNumber,
+        }),
+        createdById: session.id,
+      },
+    });
+
+    return NextResponse.json({ success: true, sale: updated });
+  } catch (error: unknown) {
+    const msg = error instanceof Error ? error.message : "Gagal memperbarui transaksi penjualan";
+    return NextResponse.json({ error: msg }, { status: 500 });
+  }
+}

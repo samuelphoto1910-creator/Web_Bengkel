@@ -13,6 +13,7 @@ import {
   Printer,
   X,
   AlertCircle,
+  Calendar,
 } from "lucide-react";
 
 interface SaleItem {
@@ -61,6 +62,12 @@ export default function PenjualanPage() {
   const [voidReason, setVoidReason] = useState("");
   const [voidSubmitting, setVoidSubmitting] = useState(false);
   const [voidError, setVoidError] = useState<string | null>(null);
+
+  // Edit Date Modal
+  const [editingSale, setEditingSale] = useState<Sale | null>(null);
+  const [editDate, setEditDate] = useState("");
+  const [editSubmitting, setEditSubmitting] = useState(false);
+  const [editError, setEditError] = useState<string | null>(null);
 
   const fetchSales = async () => {
     setLoading(true);
@@ -116,6 +123,47 @@ export default function PenjualanPage() {
       setVoidError(err instanceof Error ? err.message : "Terjadi kesalahan");
     } finally {
       setVoidSubmitting(false);
+    }
+  };
+
+  const handleOpenEditDate = (s: Sale) => {
+    setEditingSale(s);
+    const d = new Date(s.date);
+    const dateStr = !isNaN(d.getTime()) ? d.toISOString().split("T")[0] : new Date().toISOString().split("T")[0];
+    setEditDate(dateStr);
+    setEditError(null);
+  };
+
+  const handleSaveEditDate = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingSale || !editDate) return;
+
+    setEditSubmitting(true);
+    setEditError(null);
+
+    try {
+      const origDate = new Date(editingSale.date);
+      const [y, m, d] = editDate.split("-").map(Number);
+      const newDate = new Date(y, m - 1, d, origDate.getHours(), origDate.getMinutes(), origDate.getSeconds());
+
+      const res = await fetch("/api/sales", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: editingSale.id,
+          date: newDate.toISOString(),
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Gagal mengubah tanggal penjualan");
+
+      setEditingSale(null);
+      fetchSales();
+    } catch (err: unknown) {
+      setEditError(err instanceof Error ? err.message : "Terjadi kesalahan");
+    } finally {
+      setEditSubmitting(false);
     }
   };
 
@@ -317,6 +365,13 @@ export default function PenjualanPage() {
                         >
                           <Printer className="w-3.5 h-3.5" />
                         </button>
+                        <button
+                          onClick={() => handleOpenEditDate(s)}
+                          title="Ubah Tanggal Transaksi"
+                          className="p-1.5 rounded-lg text-slate-500 hover:text-amber-600 hover:bg-amber-50 transition-colors cursor-pointer"
+                        >
+                          <Calendar className="w-3.5 h-3.5" />
+                        </button>
                         {s.status === "POSTED" && (
                           <button
                             onClick={() => handleOpenVoid(s)}
@@ -422,6 +477,18 @@ export default function PenjualanPage() {
             <div className="pt-4 border-t border-slate-100 flex justify-end space-x-2">
               <button
                 type="button"
+                onClick={() => {
+                  const s = viewingSale;
+                  setViewingSale(null);
+                  handleOpenEditDate(s);
+                }}
+                className="flex items-center space-x-1.5 px-3.5 py-2 bg-amber-50 hover:bg-amber-100 text-amber-700 border border-amber-200 rounded-lg text-xs font-semibold cursor-pointer"
+              >
+                <Calendar className="w-3.5 h-3.5" />
+                <span>Ubah Tanggal</span>
+              </button>
+              <button
+                type="button"
                 onClick={() => handlePrintReceipt(viewingSale)}
                 className="flex items-center space-x-1.5 px-3.5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-semibold cursor-pointer"
               >
@@ -493,6 +560,63 @@ export default function PenjualanPage() {
                   className="px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white rounded-lg font-semibold cursor-pointer disabled:opacity-50"
                 >
                   {voidSubmitting ? "Memproses..." : "Konfirmasi Void Penjualan"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+      {/* Edit Date Modal */}
+      {editingSale && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-sm w-full p-6 shadow-2xl border border-slate-200">
+            <div className="flex items-center space-x-3 text-amber-600 mb-3">
+              <Calendar className="w-6 h-6 shrink-0" />
+              <div>
+                <h3 className="font-bold text-slate-900 text-sm">Ubah Tanggal Penjualan</h3>
+                <p className="text-xs text-slate-500 font-mono">{editingSale.invoiceNumber}</p>
+              </div>
+            </div>
+
+            <p className="text-xs text-slate-600 mb-4">
+              Pelanggan: <span className="font-semibold text-slate-800">{editingSale.customerName}</span>
+            </p>
+
+            {editError && (
+              <div className="mb-4 p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs">
+                {editError}
+              </div>
+            )}
+
+            <form onSubmit={handleSaveEditDate} className="space-y-4">
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  Pilih Tanggal Transaksi Baru
+                </label>
+                <input
+                  type="date"
+                  required
+                  value={editDate}
+                  onChange={(e) => setEditDate(e.target.value)}
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 font-medium focus:ring-2 focus:ring-amber-500 focus:outline-hidden"
+                />
+              </div>
+
+              <div className="flex items-center justify-end space-x-2 pt-2 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setEditingSale(null)}
+                  disabled={editSubmitting}
+                  className="px-3.5 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-lg cursor-pointer"
+                >
+                  Batal
+                </button>
+                <button
+                  type="submit"
+                  disabled={editSubmitting}
+                  className="px-4 py-2 text-xs font-semibold text-white bg-amber-600 hover:bg-amber-500 rounded-lg shadow-xs cursor-pointer flex items-center space-x-1.5"
+                >
+                  {editSubmitting ? <span>Menyimpan...</span> : <span>Simpan Perubahan</span>}
                 </button>
               </div>
             </form>
