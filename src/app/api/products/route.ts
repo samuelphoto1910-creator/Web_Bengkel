@@ -98,9 +98,26 @@ export async function POST(req: NextRequest) {
       isService = false,
     } = body;
 
-    if (!sku || !name || !categoryId) {
+    const isServ = Boolean(isService);
+
+    // If categoryId is not provided, find or create default category
+    let targetCategoryId = categoryId;
+    if (!targetCategoryId) {
+      const defaultCategoryName = isServ ? "Jasa Servis" : "Umum";
+      let cat = await prisma.category.findUnique({
+        where: { name: defaultCategoryName },
+      });
+      if (!cat) {
+        cat = await prisma.category.create({
+          data: { name: defaultCategoryName, description: `Kategori default untuk ${defaultCategoryName}` },
+        });
+      }
+      targetCategoryId = cat.id;
+    }
+
+    if (!sku || !name || !targetCategoryId) {
       return NextResponse.json(
-        { error: "SKU, Nama Barang, dan Kategori wajib diisi" },
+        { error: "SKU dan Nama Barang wajib diisi" },
         { status: 400 }
       );
     }
@@ -117,56 +134,60 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const isServ = Boolean(isService);
-
     // Create product in transaction
-    const created = await prisma.$transaction(async (tx) => {
-      const product = await tx.product.create({
-        data: {
-          sku: sku.trim().toUpperCase(),
-          name: name.trim(),
-          categoryId,
-          unit: isServ ? "Jasa" : unit.trim(),
-          isService: isServ,
-          lastBuyPrice: isServ ? 0 : Number(buyPrice),
-          averageBuyPrice: isServ ? 0 : Number(buyPrice),
-          sellPrice: Number(sellPrice),
-          stock: isServ ? 0 : Number(initialStock),
-          minStock: isServ ? 0 : Number(minStock),
-          status: "ACTIVE",
-        },
-        include: { category: true },
-      });
-
-      // Record initial stock movement if initialStock > 0 and not service
-      if (!isServ && Number(initialStock) > 0) {
-        await tx.stockMovement.create({
+    const created = await prisma.$transaction(
+      async (tx) => {
+        const product = await tx.product.create({
           data: {
-            productId: product.id,
-            type: "ADJUSTMENT_IN",
-            refNumber: "STOK-AWAL",
-            quantity: Number(initialStock),
-            previousStock: 0,
-            currentStock: Number(initialStock),
-            reason: "Saldo stok awal saat pendaftaran barang",
+            sku: sku.trim().toUpperCase(),
+            name: name.trim(),
+            categoryId: targetCategoryId,
+            unit: isServ ? "Jasa" : unit.trim(),
+            isService: isServ,
+            lastBuyPrice: isServ ? 0 : Number(buyPrice),
+            averageBuyPrice: isServ ? 0 : Number(buyPrice),
+            sellPrice: Number(sellPrice),
+            stock: isServ ? 0 : Number(initialStock),
+            minStock: isServ ? 0 : Number(minStock),
+            status: "ACTIVE",
+          },
+          include: { category: true },
+        });
+
+        // Record initial stock movement if initialStock > 0 and not service
+        if (!isServ && Number(initialStock) > 0) {
+          await tx.stockMovement.create({
+            data: {
+              productId: product.id,
+              type: "ADJUSTMENT_IN",
+              refNumber: "STOK-AWAL",
+              quantity: Number(initialStock),
+              previousStock: 0,
+              currentStock: Number(initialStock),
+              reason: "Saldo stok awal saat pendaftaran barang",
+              createdById: session.id,
+            },
+          });
+        }
+
+        // Record audit log
+        await tx.auditLog.create({
+          data: {
+            action: "CREATE",
+            entity: "Product",
+            recordId: product.id,
+            metadata: JSON.stringify({ sku: product.sku, name: product.name, stock: product.stock }),
             createdById: session.id,
           },
         });
+
+        return product;
+      },
+      {
+        maxWait: 10000,
+        timeout: 20000,
       }
-
-      // Record audit log
-      await tx.auditLog.create({
-        data: {
-          action: "CREATE",
-          entity: "Product",
-          recordId: product.id,
-          metadata: JSON.stringify({ sku: product.sku, name: product.name, stock: product.stock }),
-          createdById: session.id,
-        },
-      });
-
-      return product;
-    });
+    );
 
     return NextResponse.json({ success: true, product: created });
   } catch (error: unknown) {
@@ -271,11 +292,17 @@ export async function DELETE(req: NextRequest) {
     }
 
     // If completely unused, physical delete is safe
-    await prisma.$transaction(async (tx) => {
-      await tx.stockMovement.deleteMany({ where: { productId: id } });
-      await tx.auditLog.deleteMany({ where: { recordId: id } });
-      await tx.product.delete({ where: { id } });
-    });
+    await prisma.$transaction(
+      async (tx) => {
+        await tx.stockMovement.deleteMany({ where: { productId: id } });
+        await tx.auditLog.deleteMany({ where: { recordId: id } });
+        await tx.product.delete({ where: { id } });
+      },
+      {
+        maxWait: 10000,
+        timeout: 20000,
+      }
+    );
 
     return NextResponse.json({
       success: true,

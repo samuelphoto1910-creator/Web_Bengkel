@@ -101,7 +101,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Auto-generate invoice number if not specified
+    // Auto-generate invoice number if not specified (with collision prevention)
     let finalInvoiceNumber = invoiceNumber?.trim();
     if (!finalInvoiceNumber) {
       const todayCount = await prisma.purchase.count({
@@ -111,7 +111,12 @@ export async function POST(req: NextRequest) {
           },
         },
       });
-      finalInvoiceNumber = generateCode("PB", todayCount + 1);
+      let seq = todayCount + 1;
+      finalInvoiceNumber = generateCode("PB", seq);
+      while (await prisma.purchase.findUnique({ where: { invoiceNumber: finalInvoiceNumber } })) {
+        seq += 1;
+        finalInvoiceNumber = generateCode("PB", seq);
+      }
     }
 
     // Calculate subtotal
@@ -134,92 +139,134 @@ export async function POST(req: NextRequest) {
     const grandTotal = Math.max(0, subtotalCalc - disc + fee);
 
     // Atomic transaction: create purchase, update stock & moving average HPP, log stock movements
-    const purchaseResult = await prisma.$transaction(async (tx) => {
-      const purchase = await tx.purchase.create({
-        data: {
-          invoiceNumber: finalInvoiceNumber,
-          supplierId,
-          date: new Date(date),
-          status: "POSTED",
-          subtotal: subtotalCalc,
-          discount: disc,
-          additionalFee: fee,
-          total: grandTotal,
-          notes: notes?.trim() || null,
-          createdById: session.id,
-          items: {
-            create: validatedItems.map((item) => ({
-              productId: item.productId,
-              quantity: item.quantity,
-              buyPrice: item.buyPrice,
-              subtotal: item.subtotal,
-            })),
-          },
-        },
-        include: { items: true, supplier: true },
-      });
-
-      // Update each product: stock, last buy price, moving weighted average HPP
-      for (const item of validatedItems) {
-        const prod = await tx.product.findUnique({
-          where: { id: item.productId },
+    const purchaseResult = await prisma.$transaction(
+      async (tx) => {
+        // 1. Single query to fetch all products
+        const productIds = Array.from(new Set(validatedItems.map((i: { productId: string }) => i.productId)));
+        const products = await tx.product.findMany({
+          where: { id: { in: productIds } },
         });
 
-        if (!prod) {
-          throw new Error(`Barang dengan ID ${item.productId} tidak ditemukan`);
+        const productMap = new Map(products.map((p) => [p.id, p]));
+
+        for (const pid of productIds) {
+          if (!productMap.has(pid)) {
+            throw new Error(`Barang dengan ID ${pid} tidak ditemukan`);
+          }
         }
 
-        const prevStock = prod.stock;
-        const newStock = prevStock + item.quantity;
-        const newHPP = calculateMovingAverageHPP(
-          prevStock,
-          prod.averageBuyPrice,
-          item.quantity,
-          item.buyPrice
-        );
-
-        // Update product
-        await tx.product.update({
-          where: { id: item.productId },
+        // 2. Create Purchase Header & Details (Single Query)
+        const purchase = await tx.purchase.create({
           data: {
-            stock: newStock,
-            lastBuyPrice: item.buyPrice,
-            averageBuyPrice: newHPP,
+            invoiceNumber: finalInvoiceNumber,
+            supplierId,
+            date: new Date(date),
+            status: "POSTED",
+            subtotal: subtotalCalc,
+            discount: disc,
+            additionalFee: fee,
+            total: grandTotal,
+            notes: notes?.trim() || null,
+            createdById: session.id,
+            items: {
+              create: validatedItems.map((item: { productId: string; quantity: number; buyPrice: number; subtotal: number }) => ({
+                productId: item.productId,
+                quantity: item.quantity,
+                buyPrice: item.buyPrice,
+                subtotal: item.subtotal,
+              })),
+            },
           },
+          include: { items: true, supplier: true },
         });
 
-        // Insert stock movement
-        await tx.stockMovement.create({
-          data: {
+        // 3. Compute new stock and moving average HPP for each item
+        const runningProductState = new Map<
+          string,
+          { stock: number; averageBuyPrice: number; lastBuyPrice: number }
+        >();
+
+        for (const pid of productIds) {
+          const p = productMap.get(pid)!;
+          runningProductState.set(pid, {
+            stock: p.stock,
+            averageBuyPrice: Number(p.averageBuyPrice),
+            lastBuyPrice: Number(p.lastBuyPrice),
+          });
+        }
+
+        const stockMovementsData = [];
+
+        for (const item of validatedItems) {
+          const state = runningProductState.get(item.productId)!;
+          const prevStock = state.stock;
+          const newStock = prevStock + item.quantity;
+          const newHPP = calculateMovingAverageHPP(
+            prevStock,
+            state.averageBuyPrice,
+            item.quantity,
+            item.buyPrice
+          );
+
+          // Update running state
+          state.stock = newStock;
+          state.averageBuyPrice = newHPP;
+          state.lastBuyPrice = item.buyPrice;
+
+          stockMovementsData.push({
             productId: item.productId,
-            type: "IN_PURCHASE",
+            type: "IN_PURCHASE" as const,
             refNumber: finalInvoiceNumber,
             quantity: item.quantity,
             previousStock: prevStock,
             currentStock: newStock,
             reason: `Pembelian dari ${purchase.supplier.name} (${finalInvoiceNumber})`,
             createdById: session.id,
+          });
+        }
+
+        // Single batch insert for all stock movements
+        await tx.stockMovement.createMany({
+          data: stockMovementsData,
+        });
+
+        // Concurrently update products
+        const productUpdates = Array.from(runningProductState.entries()).map(
+          ([productId, state]) =>
+            tx.product.update({
+              where: { id: productId },
+              data: {
+                stock: state.stock,
+                lastBuyPrice: state.lastBuyPrice,
+                averageBuyPrice: state.averageBuyPrice,
+              },
+            })
+        );
+
+        await Promise.all(productUpdates);
+
+        // 4. Record Audit Log (Single Query)
+        await tx.auditLog.create({
+          data: {
+            action: "POST",
+            entity: "Purchase",
+            recordId: purchase.id,
+            metadata: JSON.stringify({
+              invoiceNumber: finalInvoiceNumber,
+              total: grandTotal,
+              itemCount: validatedItems.length,
+            }),
+            createdById: session.id,
           },
         });
+
+        return purchase;
+      },
+      {
+        maxWait: 10000,
+        timeout: 30000,
       }
-
-      // Record Audit Log
-      await tx.auditLog.create({
-        data: {
-          action: "POST",
-          entity: "Purchase",
-          recordId: purchase.id,
-          metadata: JSON.stringify({
-            invoiceNumber: finalInvoiceNumber,
-            total: grandTotal,
-            itemCount: validatedItems.length,
-          }),
-          createdById: session.id,
-        },
-      });
-
-      return purchase;
-    });
+    );
 
     return NextResponse.json({ success: true, purchase: purchaseResult });
   } catch (error: unknown) {

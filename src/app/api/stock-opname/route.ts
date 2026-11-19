@@ -74,66 +74,80 @@ export async function POST(req: NextRequest) {
       finalNumber = generateCode("SO", count + 1);
     }
 
-    const result = await prisma.$transaction(async (tx) => {
-      // Create StockOpname header
-      const opname = await tx.stockOpname.create({
-        data: {
-          opnameNumber: finalNumber,
-          date: new Date(),
-          status: isConfirm ? "CONFIRMED" : "DRAFT",
-          notes: notes?.trim() || null,
-          createdById: session.id,
-          items: {
-            create: items.map(
-              (item: {
-                productId: string;
-                systemStock: number;
-                physicalStock: number;
-                reason?: string;
-              }) => {
-                const sys = Number(item.systemStock) || 0;
-                const phy = Number(item.physicalStock) || 0;
-                return {
-                  productId: item.productId,
-                  systemStock: sys,
-                  physicalStock: phy,
-                  difference: phy - sys,
-                  reason: item.reason?.trim() || null,
-                };
-              }
-            ),
+    const result = await prisma.$transaction(
+      async (tx) => {
+        // Create StockOpname header
+        const opname = await tx.stockOpname.create({
+          data: {
+            opnameNumber: finalNumber,
+            date: new Date(),
+            status: isConfirm ? "CONFIRMED" : "DRAFT",
+            notes: notes?.trim() || null,
+            createdById: session.id,
+            items: {
+              create: items.map(
+                (item: {
+                  productId: string;
+                  systemStock: number;
+                  physicalStock: number;
+                  reason?: string;
+                }) => {
+                  const sys = Number(item.systemStock) || 0;
+                  const phy = Number(item.physicalStock) || 0;
+                  return {
+                    productId: item.productId,
+                    systemStock: sys,
+                    physicalStock: phy,
+                    difference: phy - sys,
+                    reason: item.reason?.trim() || null,
+                  };
+                }
+              ),
+            },
           },
-        },
-        include: { items: true },
-      });
+          include: { items: true },
+        });
 
-      // If confirmed directly, adjust stock and log movement
-      if (isConfirm) {
-        for (const item of opname.items) {
-          if (item.difference !== 0) {
-            await tx.product.update({
-              where: { id: item.productId },
-              data: { stock: item.physicalStock },
+        // If confirmed directly, adjust stock and log movement
+        if (isConfirm) {
+          const diffItems = opname.items.filter((item) => item.difference !== 0);
+
+          if (diffItems.length > 0) {
+            const stockMovementsData = diffItems.map((item) => ({
+              productId: item.productId,
+              type: "OPNAME" as const,
+              refNumber: finalNumber,
+              quantity: item.difference,
+              previousStock: item.systemStock,
+              currentStock: item.physicalStock,
+              reason: `Stok Opname ${finalNumber}: ${item.reason || "Penyesuaian fisik"}`,
+              createdById: session.id,
+            }));
+
+            // Single batch insert for all stock movements
+            await tx.stockMovement.createMany({
+              data: stockMovementsData,
             });
 
-            await tx.stockMovement.create({
-              data: {
-                productId: item.productId,
-                type: "OPNAME",
-                refNumber: finalNumber,
-                quantity: item.difference,
-                previousStock: item.systemStock,
-                currentStock: item.physicalStock,
-                reason: `Stok Opname ${finalNumber}: ${item.reason || "Penyesuaian fisik"}`,
-                createdById: session.id,
-              },
-            });
+            // Concurrently update physical product stock
+            const stockUpdates = diffItems.map((item) =>
+              tx.product.update({
+                where: { id: item.productId },
+                data: { stock: item.physicalStock },
+              })
+            );
+
+            await Promise.all(stockUpdates);
           }
         }
-      }
 
-      return opname;
-    });
+        return opname;
+      },
+      {
+        maxWait: 10000,
+        timeout: 30000,
+      }
+    );
 
     return NextResponse.json({ success: true, opname: result });
   } catch (error: unknown) {

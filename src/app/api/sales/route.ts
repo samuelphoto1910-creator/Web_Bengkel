@@ -108,7 +108,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Generate Invoice Number if empty
+    // Generate Invoice Number if empty (with collision prevention)
     let finalInvoiceNumber = invoiceNumber?.trim();
     if (!finalInvoiceNumber) {
       const todayCount = await prisma.sale.count({
@@ -118,136 +118,182 @@ export async function POST(req: NextRequest) {
           },
         },
       });
-      finalInvoiceNumber = generateCode("PJ", todayCount + 1);
+      let seq = todayCount + 1;
+      finalInvoiceNumber = generateCode("PJ", seq);
+      while (await prisma.sale.findUnique({ where: { invoiceNumber: finalInvoiceNumber } })) {
+        seq += 1;
+        finalInvoiceNumber = generateCode("PJ", seq);
+      }
     }
 
-    // Atomic transaction for posting sale
-    const saleResult = await prisma.$transaction(async (tx) => {
-      let subtotalCalc = 0;
-      const preparedItems = [];
+    // Atomic transaction for posting sale with timeout configuration
+    const saleResult = await prisma.$transaction(
+      async (tx) => {
+        // 1. Batch fetch all products in a single round-trip
+        const productIds = items.map((i: { productId: string }) => i.productId);
+        const uniqueProductIds = Array.from(new Set(productIds));
 
-      // Validate stock availability and snapshot current HPP for each item
-      for (const item of items) {
-        const qty = Number(item.quantity) || 1;
-        const sellPrice = Number(item.sellPrice) || 0;
-        const itemDisc = Number(item.discount) || 0;
-        const sub = Math.max(0, qty * sellPrice - itemDisc);
-
-        // Fetch product with row-level check
-        const product = await tx.product.findUnique({
-          where: { id: item.productId },
+        const products = await tx.product.findMany({
+          where: { id: { in: uniqueProductIds } },
         });
 
-        if (!product) {
-          throw new Error(`Barang dengan ID ${item.productId} tidak ditemukan`);
+        const productMap = new Map(products.map((p) => [p.id, p]));
+
+        // Check if any product is missing
+        for (const pid of uniqueProductIds) {
+          if (!productMap.has(pid)) {
+            throw new Error(`Barang dengan ID ${pid} tidak ditemukan`);
+          }
         }
 
-        // Check if sufficient stock (AC-04: Ditolak jika stok tidak mencukupi, kecuali jasa)
-        if (!product.isService && product.stock < qty) {
-          throw new Error(
-            `Stok tidak mencukupi untuk "${product.name}". Stok tersedia: ${product.stock} ${product.unit}, diminta: ${qty}`
-          );
+        // Aggregate requested quantities per product to accurately check total stock
+        const requestedQtyMap = new Map<string, number>();
+        for (const item of items) {
+          const qty = Number(item.quantity) || 1;
+          requestedQtyMap.set(item.productId, (requestedQtyMap.get(item.productId) || 0) + qty);
         }
 
-        subtotalCalc += sub;
-        preparedItems.push({
-          productId: product.id,
-          productName: product.name,
-          unit: product.unit,
-          isService: product.isService,
-          currentStock: product.stock,
-          quantity: qty,
-          sellPrice,
-          hppSnapshot: product.isService ? 0 : Number(product.averageBuyPrice), // HPP Jasa = 0
-          discount: itemDisc,
-          subtotal: sub,
-        });
-      }
+        // Validate stock sufficiency for physical products (AC-04: Ditolak jika stok tidak cukup, kecuali jasa)
+        for (const [pid, totalRequestedQty] of requestedQtyMap.entries()) {
+          const prod = productMap.get(pid)!;
+          if (!prod.isService && prod.stock < totalRequestedQty) {
+            throw new Error(
+              `Stok tidak mencukupi untuk "${prod.name}". Stok tersedia: ${prod.stock} ${prod.unit}, diminta: ${totalRequestedQty}`
+            );
+          }
+        }
 
-      const discTotal = Number(discount) || 0;
-      const grandTotal = Math.max(0, subtotalCalc - discTotal);
+        let subtotalCalc = 0;
+        const preparedItems = [];
 
-      // Validasi payment method
-      const validPaymentMethods = ["CASH", "DEBIT", "CREDIT", "TRANSFER"] as const;
-      const finalPaymentMethod = validPaymentMethods.includes(paymentMethod as typeof validPaymentMethods[number])
-        ? (paymentMethod as typeof validPaymentMethods[number])
-        : "CASH";
+        for (const item of items) {
+          const qty = Number(item.quantity) || 1;
+          const sellPrice = Number(item.sellPrice) || 0;
+          const itemDisc = Number(item.discount) || 0;
+          const sub = Math.max(0, qty * sellPrice - itemDisc);
+          const product = productMap.get(item.productId)!;
 
-      // 1. Create Sale Header & Details
-      const sale = await tx.sale.create({
-        data: {
-          invoiceNumber: finalInvoiceNumber,
-          customerName: customerName?.trim() || "Pelanggan Umum",
-          date: new Date(date),
-          status: "POSTED",
-          paymentMethod: finalPaymentMethod,
-          cardReference: cardReference ? String(cardReference).trim() : null,
-          cashGiven: Number(cashGiven) || 0,
-          change: Number(change) || 0,
-          subtotal: subtotalCalc,
-          discount: discTotal,
-          total: grandTotal,
-          notes: notes?.trim() || null,
-          createdById: session.id,
-          items: {
-            create: preparedItems.map((item) => ({
-              productId: item.productId,
-              quantity: item.quantity,
-              sellPrice: item.sellPrice,
-              hppSnapshot: item.hppSnapshot,
-              discount: item.discount,
-              subtotal: item.subtotal,
-            })),
-          },
-        },
-        include: { items: true },
-      });
+          subtotalCalc += sub;
+          preparedItems.push({
+            productId: product.id,
+            productName: product.name,
+            unit: product.unit,
+            isService: product.isService,
+            currentStock: product.stock,
+            quantity: qty,
+            sellPrice,
+            hppSnapshot: product.isService ? 0 : Number(product.averageBuyPrice),
+            discount: itemDisc,
+            subtotal: sub,
+          });
+        }
 
-      // 2. Reduce stock and record stock movements (hanya untuk barang fisik, jasa tidak potong stok)
-      for (const item of preparedItems) {
-        if (item.isService) continue;
+        const discTotal = Number(discount) || 0;
+        const grandTotal = Math.max(0, subtotalCalc - discTotal);
 
-        const prevStock = item.currentStock;
-        const newStock = prevStock - item.quantity;
+        // Validasi payment method
+        const validPaymentMethods = ["CASH", "DEBIT", "CREDIT", "TRANSFER"] as const;
+        const finalPaymentMethod = validPaymentMethods.includes(paymentMethod as typeof validPaymentMethods[number])
+          ? (paymentMethod as typeof validPaymentMethods[number])
+          : "CASH";
 
-        // Deduct product stock
-        await tx.product.update({
-          where: { id: item.productId },
-          data: { stock: newStock },
-        });
-
-        // Insert stock movement record
-        await tx.stockMovement.create({
+        // 2. Create Sale Header & Details (Single Query)
+        const sale = await tx.sale.create({
           data: {
-            productId: item.productId,
-            type: "OUT_SALE",
-            refNumber: finalInvoiceNumber,
-            quantity: -item.quantity,
-            previousStock: prevStock,
-            currentStock: newStock,
-            reason: `Penjualan ${finalInvoiceNumber} (${sale.customerName})`,
+            invoiceNumber: finalInvoiceNumber,
+            customerName: customerName?.trim() || "Pelanggan Umum",
+            date: new Date(date),
+            status: "POSTED",
+            paymentMethod: finalPaymentMethod,
+            cardReference: cardReference ? String(cardReference).trim() : null,
+            cashGiven: Number(cashGiven) || 0,
+            change: Number(change) || 0,
+            subtotal: subtotalCalc,
+            discount: discTotal,
+            total: grandTotal,
+            notes: notes?.trim() || null,
+            createdById: session.id,
+            items: {
+              create: preparedItems.map((item) => ({
+                productId: item.productId,
+                quantity: item.quantity,
+                sellPrice: item.sellPrice,
+                hppSnapshot: item.hppSnapshot,
+                discount: item.discount,
+                subtotal: item.subtotal,
+              })),
+            },
+          },
+          include: { items: true },
+        });
+
+        // 3. Stock deduction and movements (Only for physical goods, jasa does not change stock)
+        const physicalItems = preparedItems.filter((i) => !i.isService);
+
+        if (physicalItems.length > 0) {
+          // Track progressive stock in case an item appears multiple times
+          const runningStock = new Map<string, number>();
+          for (const item of physicalItems) {
+            if (!runningStock.has(item.productId)) {
+              runningStock.set(item.productId, item.currentStock);
+            }
+          }
+
+          const stockMovementsData = physicalItems.map((item) => {
+            const prevStock = runningStock.get(item.productId)!;
+            const newStock = prevStock - item.quantity;
+            runningStock.set(item.productId, newStock);
+
+            return {
+              productId: item.productId,
+              type: "OUT_SALE" as const,
+              refNumber: finalInvoiceNumber,
+              quantity: -item.quantity,
+              previousStock: prevStock,
+              currentStock: newStock,
+              reason: `Penjualan ${finalInvoiceNumber} (${sale.customerName})`,
+              createdById: session.id,
+            };
+          });
+
+          // Single batch insert for all stock movements
+          await tx.stockMovement.createMany({
+            data: stockMovementsData,
+          });
+
+          // Concurrently update physical product stock
+          const stockUpdates = Array.from(runningStock.entries()).map(([productId, finalStock]) =>
+            tx.product.update({
+              where: { id: productId },
+              data: { stock: finalStock },
+            })
+          );
+
+          await Promise.all(stockUpdates);
+        }
+
+        // 4. Record Audit Log (Single Query)
+        await tx.auditLog.create({
+          data: {
+            action: "POST",
+            entity: "Sale",
+            recordId: sale.id,
+            metadata: JSON.stringify({
+              invoiceNumber: finalInvoiceNumber,
+              total: grandTotal,
+              itemCount: preparedItems.length,
+            }),
             createdById: session.id,
           },
         });
+
+        return sale;
+      },
+      {
+        maxWait: 10000,
+        timeout: 30000,
       }
-
-      // 3. Record Audit Log
-      await tx.auditLog.create({
-        data: {
-          action: "POST",
-          entity: "Sale",
-          recordId: sale.id,
-          metadata: JSON.stringify({
-            invoiceNumber: finalInvoiceNumber,
-            total: grandTotal,
-            itemCount: preparedItems.length,
-          }),
-          createdById: session.id,
-        },
-      });
-
-      return sale;
-    });
+    );
 
     return NextResponse.json({ success: true, sale: saleResult });
   } catch (error: unknown) {

@@ -13,69 +13,94 @@ export async function POST(
     const body = await req.json().catch(() => ({}));
     const reason = body?.reason?.trim() || "Pembatalan / Retur transaksi pembelian";
 
-    const result = await prisma.$transaction(async (tx) => {
-      const purchase = await tx.purchase.findUnique({
-        where: { id },
-        include: { items: true },
-      });
-
-      if (!purchase) {
-        throw new Error("Transaksi pembelian tidak ditemukan");
-      }
-
-      if (purchase.status === "VOIDED") {
-        throw new Error("Transaksi pembelian ini sudah pernah dibatalkan (void)");
-      }
-
-      // Reverse stock for each item
-      for (const item of purchase.items) {
-        const prod = await tx.product.findUnique({
-          where: { id: item.productId },
+    const result = await prisma.$transaction(
+      async (tx) => {
+        const purchase = await tx.purchase.findUnique({
+          where: { id },
+          include: {
+            items: {
+              include: {
+                product: {
+                  select: { id: true, name: true, stock: true },
+                },
+              },
+            },
+          },
         });
 
-        if (!prod) continue;
+        if (!purchase) {
+          throw new Error("Transaksi pembelian tidak ditemukan");
+        }
 
-        const prevStock = prod.stock;
-        const newStock = Math.max(0, prevStock - item.quantity);
+        if (purchase.status === "VOIDED") {
+          throw new Error("Transaksi pembelian ini sudah pernah dibatalkan (void)");
+        }
 
-        await tx.product.update({
-          where: { id: item.productId },
-          data: { stock: newStock },
+        if (purchase.items.length > 0) {
+          const runningStock = new Map<string, number>();
+          for (const item of purchase.items) {
+            if (!runningStock.has(item.productId)) {
+              runningStock.set(item.productId, item.product.stock);
+            }
+          }
+
+          const stockMovementsData = purchase.items.map((item) => {
+            const prevStock = runningStock.get(item.productId)!;
+            const newStock = Math.max(0, prevStock - item.quantity);
+            runningStock.set(item.productId, newStock);
+
+            return {
+              productId: item.productId,
+              type: "VOID_PURCHASE" as const,
+              refNumber: purchase.invoiceNumber,
+              quantity: -item.quantity,
+              previousStock: prevStock,
+              currentStock: newStock,
+              reason: `Void Pembelian (${purchase.invoiceNumber}): ${reason}`,
+              createdById: session.id,
+            };
+          });
+
+          // Single batch insert for all stock movements
+          await tx.stockMovement.createMany({
+            data: stockMovementsData,
+          });
+
+          // Concurrently update physical product stock
+          const stockUpdates = Array.from(runningStock.entries()).map(([productId, finalStock]) =>
+            tx.product.update({
+              where: { id: productId },
+              data: { stock: finalStock },
+            })
+          );
+
+          await Promise.all(stockUpdates);
+        }
+
+        // Update purchase status
+        const updatedPurchase = await tx.purchase.update({
+          where: { id },
+          data: { status: "VOIDED" },
         });
 
-        await tx.stockMovement.create({
+        // Audit log
+        await tx.auditLog.create({
           data: {
-            productId: item.productId,
-            type: "VOID_PURCHASE",
-            refNumber: purchase.invoiceNumber,
-            quantity: -item.quantity,
-            previousStock: prevStock,
-            currentStock: newStock,
-            reason: `Void Pembelian (${purchase.invoiceNumber}): ${reason}`,
+            action: "VOID",
+            entity: "Purchase",
+            recordId: id,
+            metadata: JSON.stringify({ reason, invoiceNumber: purchase.invoiceNumber }),
             createdById: session.id,
           },
         });
+
+        return updatedPurchase;
+      },
+      {
+        maxWait: 10000,
+        timeout: 30000,
       }
-
-      // Update purchase status
-      const updatedPurchase = await tx.purchase.update({
-        where: { id },
-        data: { status: "VOIDED" },
-      });
-
-      // Audit log
-      await tx.auditLog.create({
-        data: {
-          action: "VOID",
-          entity: "Purchase",
-          recordId: id,
-          metadata: JSON.stringify({ reason, invoiceNumber: purchase.invoiceNumber }),
-          createdById: session.id,
-        },
-      });
-
-      return updatedPurchase;
-    });
+    );
 
     return NextResponse.json({ success: true, purchase: result });
   } catch (error: unknown) {

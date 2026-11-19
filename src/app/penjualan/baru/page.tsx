@@ -241,16 +241,17 @@ export default function KasirPenjualanBaruPage() {
             body: JSON.stringify({
               sku: item.product.sku,
               name: item.product.name,
-              categoryId: categories.length > 0 ? products[0]?.categoryId : undefined,
+              categoryId: products.find((p) => p.isService)?.categoryId || products[0]?.categoryId || undefined,
               sellPrice: item.sellPrice,
               isService: true,
               unit: "Jasa",
             }),
           });
           const regData = await regRes.json();
-          if (regData.product) {
-            prodId = regData.product.id;
+          if (!regRes.ok || !regData.product) {
+            throw new Error(regData.error || `Gagal mendaftarkan jasa servis "${item.product.name}"`);
           }
+          prodId = regData.product.id;
         }
         preparedItems.push({
           productId: prodId,
