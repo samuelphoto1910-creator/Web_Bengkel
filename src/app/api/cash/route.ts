@@ -10,6 +10,55 @@ export async function GET(req: NextRequest) {
     }
 
     const { searchParams } = new URL(req.url);
+
+    // ----------------------------------------------------------------
+    // Branch: ?mutationsOnly=true  — return all CashMutation records
+    // with optional date range filter ?startDate=YYYY-MM-DD&endDate=YYYY-MM-DD
+    // ----------------------------------------------------------------
+    if (searchParams.get("mutationsOnly") === "true") {
+      const startDate = searchParams.get("startDate");
+      const endDate = searchParams.get("endDate");
+
+      const where: Record<string, unknown> = {};
+      if (startDate && endDate) {
+        where.date = {
+          gte: new Date(`${startDate}T00:00:00.000`),
+          lte: new Date(`${endDate}T23:59:59.999`),
+        };
+      } else if (startDate) {
+        where.date = { gte: new Date(`${startDate}T00:00:00.000`) };
+      } else if (endDate) {
+        where.date = { lte: new Date(`${endDate}T23:59:59.999`) };
+      }
+
+      const mutations = await prisma.cashMutation.findMany({
+        where,
+        include: { user: { select: { id: true, name: true } } },
+        orderBy: { date: "desc" },
+      });
+
+      const totalTopUp = mutations
+        .filter((m) => m.type === "TOP_UP")
+        .reduce((s, m) => s + Number(m.amount), 0);
+      const totalWithdraw = mutations
+        .filter((m) => m.type === "WITHDRAW")
+        .reduce((s, m) => s + Number(m.amount), 0);
+
+      return NextResponse.json({
+        mutations: mutations.map((m) => ({
+          id: m.id,
+          date: m.date,
+          type: m.type,
+          amount: Number(m.amount),
+          notes: m.notes,
+          userName: m.user.name,
+        })),
+        totalTopUp,
+        totalWithdraw,
+        netMutation: totalTopUp - totalWithdraw,
+      });
+    }
+
     const dateParam = searchParams.get("date"); // Optional specific date (YYYY-MM-DD)
 
     const targetDate = dateParam ? new Date(dateParam) : new Date();

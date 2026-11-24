@@ -19,6 +19,8 @@ import {
   Clock,
   ArrowDownCircle,
   ArrowUpCircle,
+  Search,
+  RotateCcw,
 } from "lucide-react";
 
 interface ExpenseCategory {
@@ -63,10 +65,18 @@ export default function PengeluaranPage() {
   const [totalAmount, setTotalAmount] = useState(0);
   const [loading, setLoading] = useState(true);
 
-  // Filters
+  // Filters (Expenses tab)
   const [selectedCategory, setSelectedCategory] = useState("ALL");
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
+
+  // Mutations tab state
+  const [allMutations, setAllMutations] = useState<CashMutationItem[]>([]);
+  const [mutStartDate, setMutStartDate] = useState("");
+  const [mutEndDate, setMutEndDate] = useState("");
+  const [mutLoading, setMutLoading] = useState(false);
+  const [mutTotalTopUp, setMutTotalTopUp] = useState(0);
+  const [mutTotalWithdraw, setMutTotalWithdraw] = useState(0);
 
   // Modal Add Expense
   const [showAddModal, setShowAddModal] = useState(false);
@@ -121,10 +131,39 @@ export default function PengeluaranPage() {
     }
   };
 
+  const fetchMutations = async () => {
+    setMutLoading(true);
+    try {
+      const params = new URLSearchParams({ mutationsOnly: "true" });
+      if (mutStartDate) params.append("startDate", mutStartDate);
+      if (mutEndDate) params.append("endDate", mutEndDate);
+
+      const res = await fetch(`/api/cash?${params.toString()}`);
+      if (res.ok) {
+        const data = await res.json();
+        setAllMutations(data.mutations || []);
+        setMutTotalTopUp(data.totalTopUp || 0);
+        setMutTotalWithdraw(data.totalWithdraw || 0);
+      }
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setMutLoading(false);
+    }
+  };
+
   useEffect(() => {
     setFormDate(new Date().toISOString().split("T")[0]);
     fetchExpenses();
   }, [selectedCategory, startDate, endDate]);
+
+  // Load mutations whenever tab is active or filters change
+  useEffect(() => {
+    if (activeTab === "MUTATIONS") {
+      fetchMutations();
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, mutStartDate, mutEndDate]);
 
   const handleSubmitExpense = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -180,6 +219,7 @@ export default function PengeluaranPage() {
       setTopUpAmount("");
       setTopUpNotes("");
       fetchExpenses();
+      fetchMutations();
     } catch (err: unknown) {
       setTopUpError(err instanceof Error ? err.message : "Terjadi kesalahan");
     } finally {
@@ -438,64 +478,128 @@ export default function PengeluaranPage() {
           </div>
         </>
       ) : (
-        /* Tab 2: Riwayat Mutasi Saldo Kas (Top-up & Adjustments) */
-        <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
-          <div className="p-4 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
-            <div>
-              <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wider">
-                Riwayat Tambahan Modal & Mutasi Kas Hari Ini
-              </h3>
-              <p className="text-[11px] text-slate-500">
-                Pencatatan uang masuk modal kasir untuk operasional
-              </p>
+        /* Tab 2: Riwayat Mutasi Saldo Kas — semua waktu + filter tanggal */
+        <div className="space-y-4">
+          {/* Filter bar */}
+          <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-xs flex flex-col sm:flex-row items-center gap-3">
+            <div className="flex items-center space-x-2 w-full sm:w-auto text-xs">
+              <span className="text-slate-500 font-medium whitespace-nowrap">Dari:</span>
+              <input
+                type="date"
+                value={mutStartDate}
+                onChange={(e) => setMutStartDate(e.target.value)}
+                className="px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:outline-hidden"
+              />
+              <span className="text-slate-400">s/d</span>
+              <input
+                type="date"
+                value={mutEndDate}
+                onChange={(e) => setMutEndDate(e.target.value)}
+                className="px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:outline-hidden"
+              />
             </div>
+            {(mutStartDate || mutEndDate) && (
+              <button
+                onClick={() => { setMutStartDate(""); setMutEndDate(""); }}
+                className="flex items-center space-x-1.5 px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-xl text-xs font-semibold transition-colors cursor-pointer"
+              >
+                <ArrowUpCircle className="w-3.5 h-3.5 rotate-90" />
+                <span>Reset Filter</span>
+              </button>
+            )}
+            <span className="ml-auto text-[11px] text-slate-400">
+              {allMutations.length} data{!mutStartDate && !mutEndDate ? " (semua waktu)" : ""}
+            </span>
           </div>
 
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs">
-              <thead>
-                <tr className="bg-slate-50/60 border-b border-slate-200 text-slate-500 uppercase tracking-wider font-semibold">
-                  <th className="py-3.5 px-5">Waktu</th>
-                  <th className="py-3.5 px-5">Tipe</th>
-                  <th className="py-3.5 px-5">Keterangan</th>
-                  <th className="py-3.5 px-5 text-right">Nominal (Rp)</th>
-                  <th className="py-3.5 px-5">Dicatat Oleh</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100 text-slate-700">
-                {!cashSummary?.mutations || cashSummary.mutations.length === 0 ? (
-                  <tr>
-                    <td colSpan={5} className="py-12 text-center text-slate-400">
-                      Belum ada mutasi tambah saldo kas hari ini.
-                    </td>
+          {/* Summary row */}
+          {allMutations.length > 0 && (
+            <div className="grid grid-cols-3 gap-3">
+              <div className="bg-blue-50 border border-blue-200 rounded-2xl p-3 text-center">
+                <p className="text-[11px] text-blue-600 font-bold uppercase tracking-wide">Total Tambah Saldo</p>
+                <p className="text-base font-black text-blue-700 mt-0.5">{formatRupiah(mutTotalTopUp)}</p>
+              </div>
+              <div className="bg-amber-50 border border-amber-200 rounded-2xl p-3 text-center">
+                <p className="text-[11px] text-amber-600 font-bold uppercase tracking-wide">Total Tarik Kas</p>
+                <p className="text-base font-black text-amber-700 mt-0.5">{formatRupiah(mutTotalWithdraw)}</p>
+              </div>
+              <div className={`rounded-2xl p-3 text-center border ${mutTotalTopUp - mutTotalWithdraw >= 0 ? "bg-emerald-50 border-emerald-200" : "bg-rose-50 border-rose-200"}`}>
+                <p className={`text-[11px] font-bold uppercase tracking-wide ${mutTotalTopUp - mutTotalWithdraw >= 0 ? "text-emerald-600" : "text-rose-600"}`}>Net Mutasi</p>
+                <p className={`text-base font-black mt-0.5 ${mutTotalTopUp - mutTotalWithdraw >= 0 ? "text-emerald-700" : "text-rose-700"}`}>
+                  {mutTotalTopUp - mutTotalWithdraw >= 0 ? "+" : ""}{formatRupiah(mutTotalTopUp - mutTotalWithdraw)}
+                </p>
+              </div>
+            </div>
+          )}
+
+          {/* Table */}
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
+            <div className="p-4 bg-slate-50 border-b border-slate-200">
+              <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wider">
+                Riwayat Mutasi Saldo Kas
+              </h3>
+              <p className="text-[11px] text-slate-500">
+                Semua pencatatan tambah saldo &amp; tarik kas — gunakan filter tanggal untuk mempersempit
+              </p>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead>
+                  <tr className="bg-slate-50/60 border-b border-slate-200 text-slate-500 uppercase tracking-wider font-semibold">
+                    <th className="py-3.5 px-5">Tanggal</th>
+                    <th className="py-3.5 px-5">Tipe</th>
+                    <th className="py-3.5 px-5">Keterangan</th>
+                    <th className="py-3.5 px-5 text-right">Nominal (Rp)</th>
+                    <th className="py-3.5 px-5">Dicatat Oleh</th>
                   </tr>
-                ) : (
-                  cashSummary.mutations.map((m) => (
-                    <tr key={m.id} className="hover:bg-slate-50/70 transition-colors">
-                      <td className="py-3.5 px-5 text-slate-600 whitespace-nowrap">
-                        {formatDate(m.date)}
+                </thead>
+                <tbody className="divide-y divide-slate-100 text-slate-700">
+                  {mutLoading ? (
+                    <tr>
+                      <td colSpan={5} className="py-12 text-center text-slate-400">
+                        Memuat riwayat mutasi...
                       </td>
-                      <td className="py-3.5 px-5">
-                        <span
-                          className={`px-2 py-0.5 rounded-full text-[11px] font-bold ${
-                            m.type === "TOP_UP"
-                              ? "bg-blue-50 text-blue-700"
-                              : "bg-amber-50 text-amber-700"
-                          }`}
-                        >
-                          {m.type === "TOP_UP" ? "➕ Tambah Saldo" : "➖ Tarik Kas"}
-                        </span>
-                      </td>
-                      <td className="py-3.5 px-5 font-medium text-slate-900">{m.notes}</td>
-                      <td className="py-3.5 px-5 text-right font-extrabold text-blue-700">
-                        +{formatRupiah(m.amount)}
-                      </td>
-                      <td className="py-3.5 px-5 text-slate-500">{m.userName}</td>
                     </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
+                  ) : allMutations.length === 0 ? (
+                    <tr>
+                      <td colSpan={5} className="py-12 text-center text-slate-400">
+                        {mutStartDate || mutEndDate
+                          ? "Tidak ada mutasi pada periode yang dipilih."
+                          : "Belum ada mutasi saldo kas yang tercatat."}
+                      </td>
+                    </tr>
+                  ) : (
+                    allMutations.map((m) => (
+                      <tr key={m.id} className="hover:bg-slate-50/70 transition-colors">
+                        <td className="py-3.5 px-5 text-slate-600 whitespace-nowrap">
+                          {formatDate(m.date)}
+                        </td>
+                        <td className="py-3.5 px-5">
+                          <span
+                            className={`px-2 py-0.5 rounded-full text-[11px] font-bold flex items-center gap-1 w-fit ${
+                              m.type === "TOP_UP"
+                                ? "bg-blue-50 text-blue-700"
+                                : "bg-amber-50 text-amber-700"
+                            }`}
+                          >
+                            {m.type === "TOP_UP"
+                              ? <ArrowDownCircle className="w-3 h-3" />
+                              : <ArrowUpCircle className="w-3 h-3" />}
+                            {m.type === "TOP_UP" ? "Tambah Saldo" : "Tarik Kas"}
+                          </span>
+                        </td>
+                        <td className="py-3.5 px-5 font-medium text-slate-900">{m.notes}</td>
+                        <td className={`py-3.5 px-5 text-right font-extrabold ${m.type === "TOP_UP" ? "text-blue-700" : "text-amber-700"}`}>
+                          {m.type === "TOP_UP" ? "+" : "-"}{formatRupiah(m.amount)}
+                        </td>
+                        <td className="py-3.5 px-5 text-slate-500">{m.userName}</td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
       )}
